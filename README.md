@@ -8,6 +8,8 @@ Real-time voice sentiment classification with **PyTorch**: microphone or dataset
 
 **Repository**: [https://github.com/dmanzato/live-sentiment-classifier](https://github.com/dmanzato/live-sentiment-classifier)
 
+**Clone**: `git clone https://github.com/dmanzato/live-sentiment-classifier`
+
 ---
 
 ## Project Overview
