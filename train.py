@@ -231,7 +231,8 @@ def main():
     try:
         idx2name = train_ds.idx2name
         num_classes = len(idx2name)
-        logger.info(f"Classes ({num_classes}): {', '.join(idx2name)}")
+        class_names = [idx2name[i] for i in range(num_classes)]
+        logger.info(f"Classes ({num_classes}): {', '.join(class_names)}")
     except Exception as e:
         logger.error(f"Could not derive class names: {e}", exc_info=True)
         sys.exit(1)
