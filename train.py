@@ -79,6 +79,81 @@ def compute_class_weights(subset, num_classes: int) -> torch.DoubleTensor:
     return torch.DoubleTensor(sample_weights)
 
 
+def compute_class_weights_for_loss(subset, num_classes: int) -> torch.Tensor:
+    """
+    Compute class weights for loss function (inverse frequency weighting).
+    Returns tensor of shape [num_classes] suitable for CrossEntropyLoss(weight=...).
+    Uses sklearn-style balanced weights: n_samples / (n_classes * np.bincount(y))
+    """
+    if hasattr(subset, "indices") and hasattr(subset, "dataset"):
+        indices = subset.indices
+        base_ds = subset.dataset
+        labels = []
+        for i in indices:
+            item = base_ds[i]
+            _, y, _ = _unpack_batch(item)
+            labels.append(int(y))
+    else:
+        labels = []
+        for i in range(len(subset)):
+            _, y, _ = _unpack_batch(subset[i])
+            labels.append(int(y))
+
+    labels = np.asarray(labels, dtype=np.int64)
+    counts = np.bincount(labels, minlength=num_classes)
+    # sklearn balanced weights: n_samples / (n_classes * np.bincount(y))
+    total = len(labels)
+    weights = total / (num_classes * np.maximum(counts, 1))
+    # Normalize weights to prevent extreme values (clamp max weight to 3x min weight)
+    # This prevents one class from dominating the loss
+    min_weight = weights.min()
+    max_weight_allowed = min_weight * 3.0
+    weights = np.clip(weights, min_weight, max_weight_allowed)
+    return torch.FloatTensor(weights)
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance.
+    
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    
+    Args:
+        alpha: Weighting factor for rare class (can be a tensor for per-class weights).
+        gamma: Focusing parameter (gamma=0 is equivalent to CE loss).
+        reduction: Specifies the reduction to apply to the output.
+    """
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
+        super().__init__()
+        if alpha is not None:
+            self.register_buffer('alpha', torch.tensor(alpha, dtype=torch.float32))
+        else:
+            self.alpha = None
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # Compute cross entropy loss without reduction
+        ce_loss = nn.functional.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
+        
+        # Compute p_t (probability of true class)
+        # ce_loss = -log(p_t), so p_t = exp(-ce_loss)
+        pt = torch.exp(-ce_loss)
+        
+        # Clamp pt to avoid numerical instability
+        pt = torch.clamp(pt, min=1e-7, max=1.0 - 1e-7)
+        
+        # Compute focal loss
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, num_classes: int):
     """
     Evaluate model on a dataset. Returns (macro F1, confusion matrix).
@@ -148,9 +223,17 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4, help="Base learning rate")
     ap.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
     ap.add_argument("--model", type=str, default="smallcnn", choices=["smallcnn", "resnet18"], help="Model architecture")
+    ap.add_argument("--dropout", type=float, default=0.0, help="Dropout probability for SmallCNN (default: 0.0, use 0.3-0.5 for regularization)")
+    ap.add_argument("--use_bn", action="store_true", help="Use Batch Normalization in SmallCNN (disabled by default)")
     ap.add_argument("--use_specaug", action="store_true", help="Enable SpecAugment")
+    ap.add_argument("--specaug_freq", type=int, default=8, help="SpecAugment frequency mask parameter")
+    ap.add_argument("--specaug_time", type=int, default=20, help="SpecAugment time mask parameter")
     ap.add_argument("--mixup_alpha", type=float, default=0.2, help="Mixup alpha (0=off)")
     ap.add_argument("--balanced_sampler", action="store_true", help="Balanced sampling on train split")
+    ap.add_argument("--class_weight_loss", action="store_true", help="Use class-weighted loss function")
+    ap.add_argument("--focal_loss", action="store_true", help="Use Focal Loss instead of CrossEntropy")
+    ap.add_argument("--focal_gamma", type=float, default=2.0, help="Focal Loss gamma parameter")
+    ap.add_argument("--label_smoothing", type=float, default=0.0, help="Label smoothing factor (0.0-0.1)")
     ap.add_argument("--num_workers", type=int, default=0, help="DataLoader workers")
 
     # Speech-friendly defaults (RAVDESS files are ~3-4 seconds)
@@ -189,9 +272,15 @@ def main():
         f"Test ratio (implied): {1.0 - args.train_ratio - args.val_ratio:.2f}"
     )
 
-    augment = SpecAugment() if args.use_specaug else None
-    if augment:
-        logger.info("Using SpecAugment data augmentation")
+    augment = None
+    if args.use_specaug:
+        augment = SpecAugment(
+            freq_mask_param=args.specaug_freq,
+            time_mask_param=args.specaug_time,
+            num_freq_masks=2,
+            num_time_masks=2
+        )
+        logger.info(f"Using SpecAugment (freq={args.specaug_freq}, time={args.specaug_time})")
 
     # Load datasets with proper splits (RAVDESS handles splits internally)
     try:
@@ -280,9 +369,11 @@ def main():
 
     # Model
     try:
-        model = build_model(args.model, num_classes).to(device)
+        model = build_model(args.model, num_classes, dropout=args.dropout, use_bn=args.use_bn).to(device)
         n_params = sum(p.numel() for p in model.parameters())
         logger.info(f"Model created: {args.model} with {n_params} parameters")
+        if args.model == "smallcnn":
+            logger.info(f"  Dropout: {args.dropout}, BatchNorm: {'enabled' if args.use_bn else 'disabled'}")
     except Exception as e:
         logger.error(f"Error building model: {e}", exc_info=True)
         sys.exit(1)
@@ -301,7 +392,24 @@ def main():
     T_max = max(1, args.epochs - warmup_epochs)
     scheduler = CosineAnnealingLR(opt, T_max=T_max)
 
-    loss_fn = nn.CrossEntropyLoss()
+    # Setup loss function
+    loss_weight = None
+    if args.class_weight_loss or args.focal_loss:
+        loss_weight = compute_class_weights_for_loss(train_ds, num_classes).to(device)
+        logger.info(f"Computed class weights for loss: {loss_weight.cpu().numpy()}")
+    
+    if args.focal_loss:
+        loss_fn = FocalLoss(alpha=loss_weight, gamma=args.focal_gamma)
+        logger.info(f"Using Focal Loss (gamma={args.focal_gamma})")
+    else:
+        loss_fn = nn.CrossEntropyLoss(weight=loss_weight, label_smoothing=args.label_smoothing)
+        if args.label_smoothing > 0:
+            logger.info(f"Using CrossEntropyLoss with label smoothing={args.label_smoothing}")
+        elif loss_weight is not None:
+            logger.info("Using class-weighted CrossEntropyLoss")
+        else:
+            logger.info("Using standard CrossEntropyLoss")
+    
     best_f1 = -1.0
     logger.info(f"Starting training for {args.epochs} epochs...")
 

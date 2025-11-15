@@ -10,13 +10,15 @@ except ImportError:
     resnet18 = None
 
 
-def build_model(model_name: str, num_classes: int) -> nn.Module:
+def build_model(model_name: str, num_classes: int, dropout: float = 0.0, use_bn: bool = False) -> nn.Module:
     """
     Build a model architecture.
     
     Args:
         model_name: Name of the model architecture ('smallcnn' or 'resnet18').
         num_classes: Number of output classes.
+        dropout: Dropout probability for SmallCNN (default: 0.3).
+        use_bn: Whether to use batch normalization for SmallCNN (default: True).
     
     Returns:
         Initialized model.
@@ -36,7 +38,7 @@ def build_model(model_name: str, num_classes: int) -> nn.Module:
     
     if model_name_lower == "smallcnn":
         from models.small_cnn import SmallCNN
-        return SmallCNN(n_classes=num_classes)
+        return SmallCNN(n_classes=num_classes, dropout=dropout, use_bn=use_bn)
     elif model_name_lower == "resnet18":
         if resnet18 is None:
             raise RuntimeError(
