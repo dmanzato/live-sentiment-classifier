@@ -32,6 +32,16 @@ This project provides a complete pipeline for **voice sentiment and emotion clas
 - **Multi-device**: CPU, CUDA, and Apple Silicon MPS support
 - **Robust Audio I/O**: Uses `soundfile`/`sounddevice` for reliable audio processing
 
+### 🆕 New in v0.2.0
+
+- **Class-weighted loss**: Automatically handles class imbalance with normalized weights (`--class_weight_loss`)
+- **Focal Loss**: Advanced loss function for hard example mining (`--focal_loss`)
+- **Label smoothing**: Prevents overconfidence and improves generalization (`--label_smoothing`)
+- **Enhanced SmallCNN**: Optional Batch Normalization and Dropout for regularization (`--use_bn`, `--dropout`)
+- **Configurable augmentation**: Tune SpecAugment parameters for optimal results (`--specaug_freq`, `--specaug_time`)
+
+**Best configuration achieved: 0.661 F1-macro** (up from 0.532 baseline). See [IMPROVEMENTS.md](IMPROVEMENTS.md) for detailed experimental results and best practices.
+
 ### Project Structure
 
 ```
@@ -267,7 +277,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Status
 
-**Version**: 0.1.0 (Initial release - November 14, 2025)
+**Version**: 0.2.0 (F1-Macro Improvements Release - November 15, 2025)
 
-This is an early version. More features (streaming inference, visualization tools, etc.) will be added in future releases.
+### Recent Updates
+
+- **v0.2.0**: Added class-weighted loss, Focal Loss, label smoothing, and enhanced augmentation options. See [CHANGELOG.md](CHANGELOG.md) for details.
+- **v0.1.0**: Initial release with core training, inference, and streaming capabilities.
+
+For detailed information on improving F1-macro scores, see [IMPROVEMENTS.md](IMPROVEMENTS.md).
 
