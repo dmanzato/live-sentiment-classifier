@@ -67,6 +67,32 @@ from utils.logging import get_logger
 
 logger = get_logger("vis_dataset")
 
+# ---------- emoji mappings ----------
+# Emoji mappings for sentiment and emotion classes
+SENTIMENT_EMOJIS = {
+    "positive": "😊",
+    "negative": "😞",
+    "neutral": "😐",
+}
+
+EMOTION_EMOJIS = {
+    "neutral": "😐",
+    "calm": "😌",
+    "happy": "😊",
+    "sad": "😢",
+    "angry": "😠",
+    "fearful": "😨",
+    "disgust": "😖",  # Changed from 🤢 to 😖 (confounded face) for better font compatibility
+    "surprised": "😲",
+}
+
+def get_class_emoji(class_name: str, mode: str) -> str:
+    """Get emoji for a class name based on mode."""
+    if mode == "sentiment":
+        return SENTIMENT_EMOJIS.get(class_name.lower(), "❓")
+    else:  # emotion
+        return EMOTION_EMOJIS.get(class_name.lower(), "❓")
+
 # ---------- util helpers ----------
 def _compute_spec_limits(mel_img: np.ndarray, auto_gain: bool, pmin: float, pmax: float, prev=None):
     if auto_gain:
@@ -145,7 +171,8 @@ def main():
     ap.add_argument("--checkpoint", type=str, default=None,
                     help="Path to checkpoint. If not specified, uses artifacts/best_model_{mode}.pt (with backward compatibility)")
     ap.add_argument("--model", type=str, default="resnet18", choices=["smallcnn", "resnet18"])  # Backbone to use
-    ap.add_argument("--topk", type=int, default=3, help="How many classes to display in bars (default: 3 for sentiment)")
+    ap.add_argument("--topk", type=int, default=None,
+                    help="How many top classes to display in bars (default: all classes). Set to limit display to top-k.")
 
     # feature/audio params (model side)
     ap.add_argument("--sr", type=int, default=22050)       # Model sample rate (Hz)
@@ -210,10 +237,13 @@ def main():
     num_classes = len(class_names)  # total classes for model head and bars
     print(f"Loaded {num_classes} classes: {class_names}")
 
-    # Adjust topk based on mode and num_classes
-    if args.topk > num_classes:
+    # Set topk to display all classes by default, or use user-specified value
+    if args.topk is None:
+        args.topk = num_classes  # Display all classes
+    elif args.topk > num_classes:
         args.topk = num_classes
         print(f"Adjusted topk to {args.topk} (max available classes)")
+    print(f"Displaying {args.topk} classes in bars graph")
 
     # dataset
     ds = RAVDESS(
@@ -301,12 +331,17 @@ def main():
     # figure layout: left = spectrogram; right = [bars over trend]
     plt.ion()
     fig = plt.figure(figsize=(12, 7))  # main figure for spec + bars + trend
-    outer = gridspec.GridSpec(1, 2, width_ratios=[3, 2], wspace=0.25, bottom=0.18, left=0.06, right=0.98, top=0.90)
+    # Reserve space for emoji subtitle (top=0.88 instead of 0.90)
+    outer = gridspec.GridSpec(1, 2, width_ratios=[3, 2], wspace=0.25, bottom=0.18, left=0.06, right=0.98, top=0.88)
     ax_spec = fig.add_subplot(outer[0, 0])  # spectrogram axis
 
     right = gridspec.GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[0, 1], height_ratios=[3, 1], hspace=0.35)
     ax_bar   = fig.add_subplot(right[0, 0])  # top-k bars axis
     ax_trend = fig.add_subplot(right[1, 0])  # top-1 probability over time
+    
+    # Emoji subtitle (positioned below main title, above graphs)
+    # This will be updated in _update_viz with emojis in their original color
+    emoji_subtitle = fig.text(0.5, 0.92, "", ha="center", va="center", fontsize=18)
 
     # spectrogram
     init_img = np.random.randn(args.n_mels, 64) * 1e-6  # tiny noise prevents colormap solid block
@@ -315,7 +350,7 @@ def main():
     ax_spec.set_ylabel("Mel bins")
     ax_spec.set_title("Spectrogram (rolling window)")
 
-    # bars
+    # bars - display all classes (or topk if specified)
     topk = max(1, min(args.topk, num_classes))  # ensure 1..num_classes
     bars = ax_bar.barh(range(topk), np.zeros(topk), align="center")
     ax_bar.set_xlim(0.0, 1.0)
@@ -323,7 +358,10 @@ def main():
     ax_bar.set_yticklabels([""] * topk)
     ax_bar.invert_yaxis()
     ax_bar.set_xlabel("Probability")
-    ax_bar.set_title(f"Top-{topk} predictions")
+    if topk == num_classes:
+        ax_bar.set_title(f"All {num_classes} classes (sorted by probability)")
+    else:
+        ax_bar.set_title(f"Top-{topk} predictions")
     bar_texts = [ax_bar.text(0.0, i, "", va="center", ha="left", fontsize=9) for i in range(topk)]  # percentage labels
 
     # trend line (top-1 prob vs time in this clip)
@@ -424,7 +462,7 @@ def main():
         return avg_probs, mel_img
 
     def _update_viz(probs: np.ndarray, mel_img: np.ndarray, gt_idx: int):
-        nonlocal last_clim
+        nonlocal last_clim, emoji_subtitle
         order_idx = np.argsort(probs)[::-1][:topk]
         top_probs = probs[order_idx]
         top_names = [class_names[j] if j < len(class_names) else f"class_{j}" for j in order_idx]
@@ -459,8 +497,17 @@ def main():
             last_clim = (vmin, vmax)
         im.set_data(mel_img)
 
+        # Get emojis for prediction and ground truth
+        pred_emoji = get_class_emoji(pred_name, args.mode)
+        gt_emoji = get_class_emoji(gt_name, args.mode)
+        
+        # Update main title with prediction and ground truth (no emojis here)
         color = "green" if correct else "red"
-        fig.suptitle(f"Pred: {pred_name}  |  GT: {gt_name}", color=color, fontsize=12)
+        fig.suptitle(f"Pred: {pred_name}  |  GT: {gt_name}", color=color, fontsize=12, y=0.98)
+        
+        # Update emoji subtitle: centered, separated by |, keeping original yellow color
+        emoji_subtitle.set_text(f"{pred_emoji}  |  {gt_emoji}")
+        
         fig.canvas.draw_idle()
         return float(top_probs[0])
 

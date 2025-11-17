@@ -13,7 +13,7 @@ Example:
     --model resnet18 \
     --mode sentiment \
     --sr 22050 --n_mels 128 --n_fft 1024 --hop_length 512 \
-    --win_sec 15 --hop_sec 0.5 --topk 3 \
+    --win_sec 15 --inf_win_sec 3.0 --hop_sec 0.5 \
     --spec_auto_gain --spec_pmin 5 --spec_pmax 95 \
     --auto_gain_norm
 """
@@ -36,7 +36,33 @@ from transforms.audio import get_mel_transform  # we'll compute mel here, log/pc
 from utils.device import get_device, get_device_name
 from utils.models import build_model
 from utils.class_map import load_class_map
-from datasets.ravdess import SENTIMENTS, EMOTIONS
+from datasets.ravdess import RAVDESS, SENTIMENTS, EMOTIONS
+
+# ---------- emoji mappings ----------
+# Emoji mappings for sentiment and emotion classes
+SENTIMENT_EMOJIS = {
+    "positive": "😊",
+    "negative": "😞",
+    "neutral": "😐",
+}
+
+EMOTION_EMOJIS = {
+    "neutral": "😐",
+    "calm": "😌",
+    "happy": "😊",
+    "sad": "😢",
+    "angry": "😠",
+    "fearful": "😨",
+    "disgust": "😖",  # Changed from 🤢 to 😖 (confounded face) for better font compatibility
+    "surprised": "😲",
+}
+
+def get_class_emoji(class_name: str, mode: str) -> str:
+    """Get emoji for a class name based on mode."""
+    if mode == "sentiment":
+        return SENTIMENT_EMOJIS.get(class_name.lower(), "❓")
+    else:  # emotion
+        return EMOTION_EMOJIS.get(class_name.lower(), "❓")
 
 # For matching training pipeline: AmplitudeToDB with stype="power" uses 10*log10
 def power_to_db(power_spec: np.ndarray, ref: float = 1.0, amin: float = 1e-10) -> np.ndarray:
@@ -104,13 +130,17 @@ def main():
     ap.add_argument("--hop_length", type=int, default=512)
 
     # streaming params
-    ap.add_argument("--win_sec", type=float, default=15.0)
+    ap.add_argument("--win_sec", type=float, default=15.0,
+                    help="Buffer window size for visualization (seconds). Default: 15.0")
+    ap.add_argument("--inf_win_sec", type=float, default=3.0,
+                    help="Inference window size for predictions (seconds). Matches training data duration (~3s). Default: 3.0")
     ap.add_argument("--hop_sec", type=float, default=0.5)
     ap.add_argument("--device", type=str, default=None, help="Sounddevice input id or substring")
     ap.add_argument("--list-devices", action="store_true")
 
     # viz / inference
-    ap.add_argument("--topk", type=int, default=3, help="Top-K predictions to show (default: 3 for sentiment, 8 for emotion)")
+    ap.add_argument("--topk", type=int, default=None,
+                    help="Top-K predictions to show (default: all classes). Set to limit display to top-k.")
     ap.add_argument("--spec_auto_gain", action="store_true", help="Auto color scale per frame")
     ap.add_argument("--spec_pmin", type=float, default=5.0, help="Lower percentile (auto-gain)")
     ap.add_argument("--spec_pmax", type=float, default=95.0, help="Upper percentile (auto-gain)")
@@ -119,8 +149,16 @@ def main():
     ap.add_argument("--auto_gain_norm", action="store_true", help="Auto-normalize input gain based on signal level")
 
     # trend line options
-    ap.add_argument("--trend_len", type=int, default=120, help="Number of hops to keep in trend buffer")
+    ap.add_argument("--trend_len", type=int, default=None, help="Number of hops to keep in trend buffer (default: 60s worth)")
     ap.add_argument("--trend_ema", type=float, default=0.0, help="EMA smoothing (0.0 disables)")
+    
+    # inference improvement options
+    ap.add_argument("--temporal_avg", action="store_true",
+                    help="Average predictions over multiple windows for better accuracy (slower but more stable)")
+    ap.add_argument("--temporal_avg_windows", type=int, default=3,
+                    help="Number of windows to average when --temporal_avg is enabled (default: 3)")
+    ap.add_argument("--apply_class_weights", action="store_true",
+                    help="Apply class weights to predictions as post-processing (helps with class imbalance)")
 
     args = ap.parse_args()
 
@@ -178,14 +216,51 @@ def main():
         num_classes = ckpt_out
         print(f"Adjusted class names to checkpoint: {num_classes} classes.")
     
-    # Adjust topk based on mode and num_classes
-    if args.topk > num_classes:
+    # Set topk to display all classes by default, or use user-specified value
+    if args.topk is None:
+        args.topk = num_classes  # Display all classes
+    elif args.topk > num_classes:
         args.topk = num_classes
         print(f"Adjusted topk to {args.topk} (max available classes)")
+    print(f"Displaying {args.topk} classes in bars graph")
 
     model = build_model(args.model, num_classes=num_classes).to(device)
     model.load_state_dict(ckpt)
     model.eval()
+    
+    # Compute class weights for post-processing (if requested)
+    class_weights = None
+    if args.apply_class_weights:
+        # Load a small subset of training data to compute class distribution
+        try:
+            temp_ds = RAVDESS(
+                root=args.data_root,
+                mode=args.mode,
+                split="train",
+                train_ratio=0.8,
+                val_ratio=0.1,
+                target_sr=args.sr,
+                duration=3.0,
+                n_mels=args.n_mels,
+                n_fft=args.n_fft,
+                hop_length=args.hop_length,
+                augment=None,
+            )
+            # Compute class weights using same formula as training
+            labels = [item.label for item in temp_ds.items]
+            labels = np.asarray(labels, dtype=np.int64)
+            counts = np.bincount(labels, minlength=num_classes)
+            total = len(labels)
+            weights = total / (num_classes * np.maximum(counts, 1))
+            # Normalize weights (clamp max weight to 3x min weight, same as training)
+            min_weight = weights.min()
+            max_weight_allowed = min_weight * 3.0
+            weights = np.clip(weights, min_weight, max_weight_allowed)
+            class_weights = weights.astype(np.float32)
+            print(f"Computed class weights for post-processing: {class_weights}")
+        except Exception as e:
+            print(f"Warning: Could not compute class weights: {e}")
+            print("Continuing without class weight post-processing")
 
     # mel on CPU (avoid MPS STFT window mismatch)
     mel_t = get_mel_transform(
@@ -220,10 +295,16 @@ def main():
     #   right-bottom: rolling top-1 trend (past→now)
     plt.ion()
     fig = plt.figure(figsize=(12, 6))
-    gs = gridspec.GridSpec(2, 2, width_ratios=[3, 2], height_ratios=[3, 1], wspace=0.25, hspace=0.35)
+    # Reserve space for emoji subtitle (top=0.88 instead of 0.90)
+    gs = gridspec.GridSpec(2, 2, width_ratios=[3, 2], height_ratios=[3, 1], wspace=0.25, hspace=0.35,
+                          top=0.88, bottom=0.12, left=0.06, right=0.98)
     ax_spec = fig.add_subplot(gs[:, 0])          # spans both rows
     ax_bar  = fig.add_subplot(gs[0, 1])          # top-right
     ax_trend = fig.add_subplot(gs[1, 1])         # bottom-right
+    
+    # Emoji subtitle (positioned below main title, above graphs)
+    # This will be updated with the detected class emoji
+    emoji_subtitle = fig.text(0.5, 0.92, "", ha="center", va="center", fontsize=18)
 
     # spectrogram image (negative time axis, past→now)
     init_img = np.random.randn(args.n_mels, 64) * 1e-6
@@ -238,7 +319,7 @@ def main():
     ax_spec.set_ylabel("Mel bins")
     ax_spec.set_xlim(-args.win_sec, 0.0)
 
-    # Top-K bars (+ percentages) — unchanged visual behavior
+    # Bars - display all classes (or topk if specified)
     topk = max(1, min(args.topk, num_classes))
     bars = ax_bar.barh(range(topk), np.zeros(topk), align="center")
     ax_bar.set_xlim(0.0, 1.0)
@@ -246,17 +327,29 @@ def main():
     ax_bar.set_yticklabels([""] * topk)
     ax_bar.invert_yaxis()
     ax_bar.set_xlabel("Probability")
-    ax_bar.set_title(f"Top-{topk} predictions")
+    if topk == num_classes:
+        ax_bar.set_title(f"All {num_classes} classes (sorted by probability)")
+    else:
+        ax_bar.set_title(f"Top-{topk} predictions")
     bar_texts = [ax_bar.text(0.0, i, "", va="center", ha="left", fontsize=9) for i in range(topk)]
 
     # Trend line with negative x (past→now at 0)
+    # Default to 60 seconds worth of data if not specified
+    if args.trend_len is None:
+        args.trend_len = int(60.0 / args.hop_sec)  # 60 seconds worth of hops
     trend_len = max(2, args.trend_len)
-    xs = -np.arange(trend_len - 1, -1, -1, dtype=float) * args.hop_sec  # e.g., [-59.5..0]
+    # Calculate actual duration and ensure x-axis matches the leftmost data point
+    trend_duration = trend_len * args.hop_sec
+    xs = -np.arange(trend_len - 1, -1, -1, dtype=float) * args.hop_sec  # e.g., [-59.5..0] for 60s
     trend_buf = deque([np.nan] * trend_len, maxlen=trend_len)
     ema_val = None if args.trend_ema <= 0.0 else 0.0
     (trend_line,) = ax_trend.plot(xs, [np.nan] * trend_len, lw=2)
+    
+    # Temporal averaging buffer (for --temporal_avg)
+    pred_history = deque(maxlen=args.temporal_avg_windows) if args.temporal_avg else None
     ax_trend.set_ylim(0.0, 1.0)
-    ax_trend.set_xlim(xs[0], xs[-1])
+    # Set x-axis to match the actual leftmost data point so curve touches y-axis
+    ax_trend.set_xlim(xs[0], 0.0)  # Use xs[0] instead of -60.0 to align with data
     try:
         total_span = abs(xs[0])
         step = 10.0
@@ -285,9 +378,11 @@ def main():
         if event.key == " ":
             state["paused"] = not state["paused"]
             if state["paused"]:
-                fig.suptitle("⏸ PAUSED", fontsize=12, color="gray")
+                fig.suptitle("⏸ PAUSED", fontsize=12, color="gray", y=0.98)
+                emoji_subtitle.set_text("")
             else:
-                fig.suptitle("", fontsize=12, color="black")
+                fig.suptitle("", fontsize=12, color="black", y=0.98)
+                emoji_subtitle.set_text("")
             fig.canvas.draw_idle()
         elif event.key in ("q", "Q"):
             state["running"] = False
@@ -346,26 +441,52 @@ def main():
                 # Clip to prevent overflow
                 x = np.clip(x, -1.0, 1.0)
                 
-                wav_t = torch.from_numpy(x).unsqueeze(0)  # [1, T]
+                # Extract the last inf_win_sec seconds for inference (matches training data duration)
+                # This improves accuracy by using context similar to training samples (~3s)
+                inf_window_size = int(args.sr * args.inf_win_sec)
+                if len(x) >= inf_window_size:
+                    x_inf = x[-inf_window_size:]  # Last inf_win_sec seconds
+                else:
+                    # Not enough data yet, pad with zeros on the left
+                    pad_size = inf_window_size - len(x)
+                    x_inf = np.pad(x, (pad_size, 0), mode='constant')
+                
+                wav_t_inf = torch.from_numpy(x_inf).unsqueeze(0)  # [1, T_inf]
 
-                # Power mel
-                mel = mel_t(wav_t).squeeze(0).cpu().numpy()  # [n_mels, time], power
+                # Power mel for inference (using shorter window matching training)
+                mel_inf = mel_t(wav_t_inf).squeeze(0).cpu().numpy()  # [n_mels, time], power
 
                 # Log-mel in decibel scale (matches training: AmplitudeToDB with stype="power")
                 # Training uses: 10 * log10(x), not just log10(x)
-                mel_feat = power_to_db(mel, ref=1.0, amin=1e-10)
-
-                # Store raw mel_feat for visualization (before standardization)
-                mel_feat_raw = mel_feat.copy()
+                mel_feat_inf = power_to_db(mel_inf, ref=1.0, amin=1e-10)
 
                 # Per-clip standardization for inference (matches training)
-                mel_feat = (mel_feat - mel_feat.mean()) / (mel_feat.std() + 1e-6)
+                mel_feat_inf = (mel_feat_inf - mel_feat_inf.mean()) / (mel_feat_inf.std() + 1e-6)
 
-                # inference on device
+                # inference on device (using 3s window matching training data)
                 with torch.no_grad():
-                    feats = torch.from_numpy(mel_feat).unsqueeze(0).unsqueeze(0).to(device)  # [1,1,n_mels,time]
+                    feats = torch.from_numpy(mel_feat_inf).unsqueeze(0).unsqueeze(0).to(device)  # [1,1,n_mels,time]
                     logits = model(feats)
                     probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+                
+                # Temporal averaging: average predictions over multiple windows
+                if args.temporal_avg and pred_history is not None:
+                    pred_history.append(probs.copy())
+                    if len(pred_history) >= args.temporal_avg_windows:
+                        # Average probabilities over recent windows
+                        probs = np.mean(list(pred_history), axis=0)
+                    # If not enough history yet, use current prediction
+                
+                # Apply class weights as post-processing (if requested)
+                if args.apply_class_weights and class_weights is not None:
+                    # Multiply probabilities by class weights and renormalize
+                    weighted_probs = probs * class_weights
+                    probs = weighted_probs / weighted_probs.sum()
+                
+                # For visualization, use full buffer (win_sec) - keep existing visualization behavior
+                wav_t = torch.from_numpy(x).unsqueeze(0)  # [1, T]
+                mel = mel_t(wav_t).squeeze(0).cpu().numpy()  # [n_mels, time], power
+                mel_feat_raw = power_to_db(mel, ref=1.0, amin=1e-10)  # Store raw for visualization
 
                 # top-k (UNCHANGED bars)
                 order = np.argsort(probs)[::-1][:topk]
@@ -416,7 +537,11 @@ def main():
                 # title w/ top-1
                 pred_label = top_names[0]
                 pred_prob = float(top_probs[0])
-                fig.suptitle(f"{pred_label} ({pred_prob*100:4.1f}%)", fontsize=12)
+                fig.suptitle(f"{pred_label} ({pred_prob*100:4.1f}%)", fontsize=12, y=0.98)
+                
+                # Update emoji subtitle: centered, showing detected class emoji
+                pred_emoji = get_class_emoji(pred_label, args.mode)
+                emoji_subtitle.set_text(pred_emoji)
 
                 # ---- update trend: newest prob goes at x=0 (right edge) ----
                 trend_buf.append(pred_prob)

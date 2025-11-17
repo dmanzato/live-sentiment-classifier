@@ -70,8 +70,9 @@ USE_SPECAUG ?= 1
 DUR ?= 3.0
 # How long to keep each item before auto-advance
 HOLD ?= $(DUR)
-# Top-K classes shown in bars
-TOPK ?= 3
+# Top-K classes shown in bars (default: empty = show all classes)
+# Set TOPK=N to limit display to top N classes (e.g., TOPK=3 for top 3 only)
+TOPK ?=
 # Rolling analysis window length (sec) - increased for better accuracy
 # Automatically capped to actual audio duration (RAVDESS files are ~3-4s)
 WIN ?= 4.0
@@ -164,7 +165,7 @@ predict:
 	  $(if $(CHECKPOINT),--checkpoint "$(CHECKPOINT)",) \
 	  --model $(MODEL) \
 	  --sr $(SR) --n_mels $(N_MELS) --n_fft $(N_FFT) --hop_length $(HOPLEN) \
-	  --topk $(TOPK) \
+	  $(if $(TOPK),--topk $(TOPK),) \
 	  --out_dir "$(OUT_DIR)"
 
 # ------------------------------------------------------------
@@ -178,8 +179,9 @@ stream:
 	  $(if $(CHECKPOINT),--checkpoint "$(CHECKPOINT)",) \
 	  --model $(MODEL) \
 	  --sr $(SR) --n_mels $(N_MELS) --n_fft $(N_FFT) --hop_length $(HOPLEN) \
-	  --win_sec $(WIN) --hop_sec $(HOP) \
-	  --topk $(TOPK) \
+	  --win_sec $(WIN) --inf_win_sec 3.0 --hop_sec $(HOP) \
+	  $(if $(TOPK),--topk $(TOPK),) \
+	  --temporal_avg --apply_class_weights \
 	  --spec_auto_gain --spec_pmin 5 --spec_pmax 95 \
 	  --auto_gain_norm \
 	  $(if $(DEVICE),--device "$(DEVICE)",)
@@ -195,7 +197,7 @@ vis:
 	  --split $(SPLIT) \
 	  $(if $(CHECKPOINT),--checkpoint "$(CHECKPOINT)",) \
 	  --model $(MODEL) \
-	  --topk $(TOPK) \
+	  $(if $(TOPK),--topk $(TOPK),) \
 	  --spec_auto_gain --spec_pmin 5 --spec_pmax 95 \
 	  --sr $(SR) --n_mels $(N_MELS) --n_fft $(N_FFT) --hop_length $(HOPLEN) \
 	  --duration $(DUR) --hold_sec $(HOLD) \
