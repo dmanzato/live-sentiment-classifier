@@ -312,6 +312,14 @@ def main():
             augment=None,  # No augmentation on validation
         )
         logger.info(f"Train items: {len(train_ds)} | Val items: {len(val_ds)}")
+        
+        # Log actor coverage for debugging
+        train_actors = sorted(set(item.actor for item in train_ds.items))
+        val_actors = sorted(set(item.actor for item in val_ds.items))
+        logger.info(f"Actors in train: {len(train_actors)} ({min(train_actors) if train_actors else 'N/A'}-{max(train_actors) if train_actors else 'N/A'})")
+        logger.info(f"Actors in val: {len(val_actors)} ({min(val_actors) if val_actors else 'N/A'}-{max(val_actors) if val_actors else 'N/A'})")
+        if len(train_actors) + len(val_actors) < 24:
+            logger.warning(f"Only found {len(set(train_actors + val_actors))} unique actors (expected 24). Check dataset structure.")
     except Exception as e:
         logger.error(f"Error loading datasets: {e}", exc_info=True)
         sys.exit(1)
@@ -378,10 +386,11 @@ def main():
         logger.error(f"Error building model: {e}", exc_info=True)
         sys.exit(1)
 
-    # Save class map
+    # Save class map (mode-specific)
     try:
-        save_class_map(artifacts_dir, list(idx2name.values()))
-        logger.info("Saved class map to artifacts/class_map.json")
+        class_map_path = artifacts_dir / f"class_map_{args.mode}.json"
+        save_class_map(artifacts_dir, list(idx2name.values()), class_map_path)
+        logger.info(f"Saved class map to {class_map_path}")
     except Exception as e:
         logger.warning(f"Could not save class map: {e}")
 
@@ -470,18 +479,18 @@ def main():
             f"train_acc={train_acc:.3f} val_f1_macro={f1:.3f}"
         )
 
-        # Save confusion matrix
+        # Save confusion matrix (mode-specific)
         try:
-            cm_path = artifacts_dir / f"confusion_matrix_epoch{epoch}.png"
+            cm_path = artifacts_dir / f"confusion_matrix_{args.mode}_epoch{epoch}.png"
             plot_confusion_matrix(cm, str(cm_path), list(idx2name.values()))
         except Exception as e:
             logger.warning(f"Could not save confusion matrix: {e}")
 
-        # Save best model
+        # Save best model (mode-specific)
         if f1 > best_f1:
             best_f1 = f1
             try:
-                checkpoint_path = artifacts_dir / "best_model.pt"
+                checkpoint_path = artifacts_dir / f"best_model_{args.mode}.pt"
                 torch.save(model.state_dict(), checkpoint_path)
                 logger.info(f"Saved best model (F1={f1:.3f}) to {checkpoint_path}")
             except Exception as e:

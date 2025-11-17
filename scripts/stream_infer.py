@@ -91,7 +91,8 @@ def _compute_spec_limits(mel_img: np.ndarray, auto_gain: bool, pmin: float, pmax
 def main():
     ap = argparse.ArgumentParser(description="Live sentiment/emotion classification stream")
     ap.add_argument("--data_root", type=str, required=True, help="Path to RAVDESS root directory")
-    ap.add_argument("--checkpoint", type=str, default="artifacts/best_model.pt")
+    ap.add_argument("--checkpoint", type=str, default=None,
+                    help="Path to checkpoint. If not specified, uses artifacts/best_model_{mode}.pt (with backward compatibility)")
     ap.add_argument("--model", type=str, default="resnet18", choices=["smallcnn", "resnet18"])
     ap.add_argument("--mode", type=str, default="sentiment", choices=["sentiment", "emotion"],
                     help="Classification mode: 'sentiment' (3 classes) or 'emotion' (8 classes) [default: sentiment]")
@@ -138,8 +139,33 @@ def main():
     num_classes = len(class_names)
     print(f"Loaded {num_classes} classes: {class_names}")
 
+    # Determine checkpoint path (mode-specific with backward compatibility)
+    if args.checkpoint:
+        ckpt_path = Path(args.checkpoint)
+    else:
+        # Try mode-specific checkpoint first
+        ckpt_path_mode = artifacts_dir / f"best_model_{args.mode}.pt"
+        ckpt_path_old = artifacts_dir / "best_model.pt"
+        
+        if ckpt_path_mode.exists():
+            ckpt_path = ckpt_path_mode
+            print(f"Using mode-specific checkpoint: {ckpt_path}")
+        elif ckpt_path_old.exists():
+            ckpt_path = ckpt_path_old
+            print(f"Using legacy checkpoint: {ckpt_path} (consider training with --mode {args.mode} for mode-specific checkpoint)")
+        else:
+            print(f"Error: No checkpoint found. Tried:")
+            print(f"  - {ckpt_path_mode}")
+            print(f"  - {ckpt_path_old}")
+            print(f"Please train a model first or specify --checkpoint")
+            return
+    
+    if not ckpt_path.exists():
+        print(f"Error: Checkpoint not found: {ckpt_path}")
+        return
+    
     # model
-    ckpt = _load_checkpoint(Path(args.checkpoint), device)
+    ckpt = _load_checkpoint(ckpt_path, device)
     ckpt_out = _detect_num_classes_from_state_dict(ckpt, mode=args.mode)
     if ckpt_out != num_classes:
         # Adapt to checkpoint

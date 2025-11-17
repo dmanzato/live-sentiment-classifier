@@ -17,9 +17,10 @@ Real-time voice sentiment classification with **PyTorch**: microphone or dataset
 This project provides a complete pipeline for **voice sentiment and emotion classification**:
 
 - **Training**: Train CNN models (SmallCNN or ResNet18) on **RAVDESS** dataset with optional data augmentation
-- **Classification Modes**: 
+- **Dual Classification Modes**: 
   - **Sentiment** (3 classes): positive, negative, neutral
   - **Emotion** (8 classes): neutral, calm, happy, sad, angry, fearful, disgust, surprised
+- **Mode-Specific Artifacts**: Both modes can coexist with separate checkpoints and class maps
 - **Live Streaming**: Real-time microphone input with live predictions
 - **Inference**: Classify audio files with Top-K predictions
 
@@ -123,7 +124,7 @@ python train.py --help
 
 ### Training
 
-Train a sentiment classification model:
+Train a sentiment classification model (3 classes: positive, negative, neutral):
 
 ```bash
 # Using Makefile (recommended)
@@ -139,11 +140,22 @@ python train.py \
   --use_specaug
 ```
 
-Train an emotion classification model (8 classes):
+Train an emotion classification model (8 classes: neutral, calm, happy, sad, angry, fearful, disgust, surprised):
 
 ```bash
+# Using Makefile
 make train DATA_ROOT=../data/RAVDESS MODE=emotion
+
+# Or using Python directly
+python train.py \
+  --data_root ../data/RAVDESS \
+  --mode emotion \
+  --epochs 25 \
+  --model resnet18 \
+  --use_specaug
 ```
+
+**Note**: Models are saved as `artifacts/best_model_{mode}.pt` to allow both modes to coexist. The class map is saved as `artifacts/class_map_{mode}.json`.
 
 ### Makefile Shortcuts
 
@@ -151,17 +163,26 @@ make train DATA_ROOT=../data/RAVDESS MODE=emotion
 # Setup virtual environment and install dependencies
 make setup
 
-# Train a model (default: sentiment mode)
-make train DATA_ROOT=../data/RAVDESS
+# Train a sentiment model (3 classes)
+make train DATA_ROOT=../data/RAVDESS MODE=sentiment
 
-# Train emotion classification
+# Train an emotion model (8 classes)
 make train DATA_ROOT=../data/RAVDESS MODE=emotion
 
-# Run inference on a WAV file
-make predict FILE=/path/to/audio.wav
+# Run inference on a WAV file (sentiment mode)
+make predict FILE=/path/to/audio.wav MODE=sentiment
 
-# Start live streaming inference
-make stream
+# Run inference on a WAV file (emotion mode)
+make predict FILE=/path/to/audio.wav MODE=emotion
+
+# Start live streaming inference (sentiment mode)
+make stream MODE=sentiment
+
+# Start live streaming inference (emotion mode)
+make stream MODE=emotion
+
+# Visualize dataset predictions (emotion mode)
+make vis MODE=emotion SPLIT=test
 ```
 
 ---

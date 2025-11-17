@@ -164,7 +164,8 @@ def predict_one(
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Predict sentiment/emotion of a single WAV file")
     ap.add_argument("--wav", type=str, required=True, help="Path to WAV file")
-    ap.add_argument("--checkpoint", type=str, default="artifacts/best_model.pt")
+    ap.add_argument("--checkpoint", type=str, default=None,
+                    help="Path to checkpoint. If not specified, uses artifacts/best_model_{mode}.pt (with backward compatibility)")
     ap.add_argument("--model", type=str, default="resnet18", choices=["smallcnn", "resnet18"])
     ap.add_argument("--mode", type=str, default="sentiment", choices=["sentiment", "emotion"],
                     help="Classification mode: 'sentiment' (3 classes) or 'emotion' (8 classes) [default: sentiment]")
@@ -182,8 +183,28 @@ if __name__ == "__main__":
     print(f"Using device: {get_device_name()} ({device})")
     print(f"Classification mode: {args.mode}")
 
-    # 1) Load checkpoint first, detect its num_classes
-    ckpt_path = Path(args.checkpoint)
+    # 1) Determine checkpoint path (mode-specific with backward compatibility)
+    artifacts_dir = Path("artifacts")
+    if args.checkpoint:
+        ckpt_path = Path(args.checkpoint)
+    else:
+        # Try mode-specific checkpoint first
+        ckpt_path_mode = artifacts_dir / f"best_model_{args.mode}.pt"
+        ckpt_path_old = artifacts_dir / "best_model.pt"
+        
+        if ckpt_path_mode.exists():
+            ckpt_path = ckpt_path_mode
+            print(f"Using mode-specific checkpoint: {ckpt_path}")
+        elif ckpt_path_old.exists():
+            ckpt_path = ckpt_path_old
+            print(f"Using legacy checkpoint: {ckpt_path} (consider training with --mode {args.mode} for mode-specific checkpoint)")
+        else:
+            print(f"Error: No checkpoint found. Tried:")
+            print(f"  - {ckpt_path_mode}")
+            print(f"  - {ckpt_path_old}")
+            print(f"Please train a model first or specify --checkpoint")
+            exit(1)
+    
     if not ckpt_path.exists():
         print(f"Error: Checkpoint not found: {ckpt_path}")
         exit(1)
@@ -191,8 +212,7 @@ if __name__ == "__main__":
     state_dict, raw_bundle = _load_checkpoint(ckpt_path, device)
     ckpt_num_classes = _detect_num_classes_from_state_dict(state_dict)
 
-    # 2) Load class names (prefer artifacts/class_map.json)
-    artifacts_dir = Path("artifacts")
+    # 2) Load class names (mode-specific with backward compatibility)
     data_root = Path(args.data_root)
     class_names = load_class_map(data_root, artifacts_dir, mode=args.mode)
     

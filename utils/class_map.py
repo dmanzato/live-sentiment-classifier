@@ -17,8 +17,9 @@ def load_class_map(data_root: Path, artifacts_dir: Path, mode: str = "sentiment"
     Load class names in index order.
     
     Priority:
-    1. artifacts/class_map.json with key 'idx2name' (list or dict)
-    2. RAVDESS dataset structure to derive class names
+    1. artifacts/class_map_{mode}.json (mode-specific, new format)
+    2. artifacts/class_map.json (backward compatibility, old format)
+    3. RAVDESS dataset structure to derive class names
     
     Args:
         data_root: Path to RAVDESS root directory.
@@ -37,9 +38,8 @@ def load_class_map(data_root: Path, artifacts_dir: Path, mode: str = "sentiment"
         >>> idx2name = load_class_map(Path("/path/to/RAVDESS"), Path("artifacts"), mode="sentiment")
         >>> print(idx2name[0])  # First class name
     """
-    # Try to load from class_map.json first
-    cm_path = artifacts_dir / "class_map.json"
-    if cm_path.exists():
+    def _load_from_json(cm_path: Path) -> List[str]:
+        """Helper to load class map from JSON file."""
         try:
             with open(cm_path, "r") as f:
                 data = json.load(f)
@@ -52,7 +52,23 @@ def load_class_map(data_root: Path, artifacts_dir: Path, mode: str = "sentiment"
                 logger.debug(f"Loaded class map from {cm_path} (dict format)")
                 return idx2name
         except Exception as e:
-            logger.warning(f"Failed to load class_map.json: {e}, falling back to RAVDESS defaults")
+            logger.warning(f"Failed to load {cm_path}: {e}")
+        return None
+    
+    # Try mode-specific class map first (new format)
+    cm_path_mode = artifacts_dir / f"class_map_{mode}.json"
+    if cm_path_mode.exists():
+        result = _load_from_json(cm_path_mode)
+        if result is not None:
+            return result
+    
+    # Try old format for backward compatibility
+    cm_path_old = artifacts_dir / "class_map.json"
+    if cm_path_old.exists():
+        result = _load_from_json(cm_path_old)
+        if result is not None:
+            logger.info(f"Loaded class map from old format ({cm_path_old}), consider using mode-specific format")
+            return result
     
     # Fallback: use standard RAVDESS classes
     if mode == "emotion":
@@ -63,21 +79,28 @@ def load_class_map(data_root: Path, artifacts_dir: Path, mode: str = "sentiment"
         return RAVDESS_SENTIMENTS.copy()
 
 
-def save_class_map(artifacts_dir: Path, idx2name: List[str]) -> None:
+def save_class_map(artifacts_dir: Path, idx2name: List[str], class_map_path: Path = None) -> None:
     """
-    Save class map to artifacts/class_map.json.
+    Save class map to artifacts directory.
     
     Args:
         artifacts_dir: Path to artifacts directory.
         idx2name: List of class names in index order.
+        class_map_path: Optional specific path to save class map. If None, uses artifacts_dir/class_map.json.
     
     Example:
         >>> from pathlib import Path
         >>> from utils.class_map import save_class_map
         >>> save_class_map(Path("artifacts"), ["positive", "negative", "neutral"])
+        >>> # Or with specific path:
+        >>> save_class_map(Path("artifacts"), ["positive", "negative", "neutral"], 
+        ...                Path("artifacts/class_map_sentiment.json"))
     """
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    cm_path = artifacts_dir / "class_map.json"
+    if class_map_path is None:
+        cm_path = artifacts_dir / "class_map.json"
+    else:
+        cm_path = class_map_path
     
     data = {
         "idx2name": idx2name,

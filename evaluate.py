@@ -96,12 +96,10 @@ def main():
                        help="Proportion of data for training (must match training) [default: 0.8]")
     parser.add_argument("--val_ratio", type=float, default=0.1,
                        help="Proportion of data for validation (must match training) [default: 0.1]")
-    parser.add_argument("--checkpoint_smallcnn", type=str,
-                       default="artifacts/best_model_smallcnn.pt",
-                       help="Path to SmallCNN checkpoint. If not found, tries artifacts/best_model.pt")
-    parser.add_argument("--checkpoint_resnet18", type=str,
-                       default="artifacts/best_model_resnet18.pt",
-                       help="Path to ResNet18 checkpoint. If not found, tries artifacts/best_model.pt")
+    parser.add_argument("--checkpoint_smallcnn", type=str, default=None,
+                       help="Path to SmallCNN checkpoint. If not specified, uses artifacts/best_model_{mode}.pt (with backward compatibility)")
+    parser.add_argument("--checkpoint_resnet18", type=str, default=None,
+                       help="Path to ResNet18 checkpoint. If not specified, uses artifacts/best_model_{mode}.pt (with backward compatibility)")
     parser.add_argument("--batch_size", type=int, default=32,
                        help="Batch size for evaluation [default: 32]")
     parser.add_argument("--sr", type=int, default=22050, help="Sample rate [default: 22050]")
@@ -175,22 +173,41 @@ def main():
     model_objects = {}  # Store model objects for parameter counting
     
     # Evaluate each model
+    artifacts_dir = Path("artifacts")
     for model_name in models_to_eval:
         if model_name not in ["smallcnn", "resnet18"]:
             logger.warning(f"Unknown model: {model_name}, skipping")
             continue
         
-        checkpoint_path = Path(args.checkpoint_smallcnn if model_name == "smallcnn" else args.checkpoint_resnet18)
+        # Determine checkpoint path (mode-specific with backward compatibility)
+        if model_name == "smallcnn":
+            user_checkpoint = args.checkpoint_smallcnn
+        else:
+            user_checkpoint = args.checkpoint_resnet18
         
-        # Fallback to default checkpoint name if specified path doesn't exist
-        if not checkpoint_path.exists():
-            default_checkpoint = Path("artifacts/best_model.pt")
-            if default_checkpoint.exists():
-                logger.info(f"Using fallback checkpoint: {default_checkpoint}")
-                checkpoint_path = default_checkpoint
+        if user_checkpoint:
+            checkpoint_path = Path(user_checkpoint)
+        else:
+            # Try mode-specific checkpoint first
+            ckpt_path_mode = artifacts_dir / f"best_model_{args.mode}.pt"
+            ckpt_path_old = artifacts_dir / "best_model.pt"
+            
+            if ckpt_path_mode.exists():
+                checkpoint_path = ckpt_path_mode
+                logger.info(f"Using mode-specific checkpoint: {checkpoint_path}")
+            elif ckpt_path_old.exists():
+                checkpoint_path = ckpt_path_old
+                logger.info(f"Using legacy checkpoint: {checkpoint_path} (consider training with --mode {args.mode} for mode-specific checkpoint)")
             else:
-                logger.warning(f"Checkpoint not found: {checkpoint_path} or {default_checkpoint}, skipping {model_name}")
+                logger.warning(f"Checkpoint not found for {model_name}. Tried:")
+                logger.warning(f"  - {ckpt_path_mode}")
+                logger.warning(f"  - {ckpt_path_old}")
+                logger.warning(f"Please train a model first or specify --checkpoint_{model_name}")
                 continue
+        
+        if not checkpoint_path.exists():
+            logger.warning(f"Checkpoint not found: {checkpoint_path}, skipping {model_name}")
+            continue
         
         logger.info(f"\n{'='*60}")
         logger.info(f"Evaluating {model_name.upper()}")

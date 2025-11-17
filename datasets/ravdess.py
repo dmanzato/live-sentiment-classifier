@@ -202,6 +202,19 @@ class RAVDESS(Dataset):
                     actor=actor_id
                 ))
         
+        if len(all_items) == 0:
+            raise ValueError(f"No valid audio files found in {self.root}")
+        
+        # Log actor coverage for debugging
+        actors_found = sorted(set(item.actor for item in all_items))
+        if len(actors_found) < 24:
+            import warnings
+            warnings.warn(
+                f"Only found {len(actors_found)} actors (expected 24). "
+                f"Actors found: {actors_found}. "
+                f"Check that all Actor_01 through Actor_24 directories exist in {self.root}"
+            )
+        
         # Deterministic split (stratified by actor to avoid data leakage)
         # Group by actor first
         items_by_actor: Dict[int, List[Item]] = {}
