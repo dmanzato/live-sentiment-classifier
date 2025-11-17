@@ -565,7 +565,7 @@ def main():
                 if args.spec_debug:
                     print(f"spec range: vmin={vmin:.3f} vmax={vmax:.3f}; "
                           f"mel_raw mean={mel_feat_raw.mean():.3f} std={mel_feat_raw.std():.3f}; "
-                          f"mel_feat mean={mel_feat.mean():.3f} std={mel_feat.std():.3f}; "
+                          f"mel_feat_inf mean={mel_feat_inf.mean():.3f} std={mel_feat_inf.std():.3f}; "
                           f"top1={pred_label}:{pred_prob:.3f}")
 
                 plt.pause(0.001)
