@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Stream inference improvements**:
+  - 3-second inference window (`--inf_win_sec`) matching training data duration for better accuracy
+  - Temporal averaging (`--temporal_avg`) for smoother, more stable predictions
+  - Class weight post-processing (`--apply_class_weights`) to handle class imbalance at inference time
+  - All classes displayed in bars graph by default (was top-3)
+  - Emoji subtitle showing detected class below main title
+  - 60-second trend graph (reduced from 120s) for better visibility
+- **Visualization improvements**:
+  - All classes displayed in bars graph by default (was top-3)
+  - Emoji display in subtitle for both prediction and ground truth
+  - 4-second display duration per sample for better final status visibility
+  - Improved final update logic to ensure last second is always shown
+- **STREAM_INFER_IMPROVEMENTS.md**: Comprehensive guide for streaming inference enhancements
+
+### Changed
+- `stream_infer.py`: Default inference window changed from 15s to 3s (matches training data)
+- `vis_dataset.py`: Default analysis window increased from 3.0s to 4.0s, hop from 0.5s to 1.0s
+- `Makefile`: Stream target now includes `--temporal_avg` and `--apply_class_weights` by default
+- `Makefile`: `TOPK` default changed to empty (show all classes) instead of 3
+
 ## [0.2.0] - 2025-11-15
 
 ### Added

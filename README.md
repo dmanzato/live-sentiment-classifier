@@ -43,6 +43,8 @@ This project provides a complete pipeline for **voice sentiment and emotion clas
 
 **Best configuration achieved: 0.661 F1-macro** (up from 0.532 baseline). See [IMPROVEMENTS.md](IMPROVEMENTS.md) for detailed experimental results and best practices.
 
+**Stream inference improvements**: Enhanced real-time detection with 3s inference windows, temporal averaging, and class weight post-processing. See [STREAM_INFER_IMPROVEMENTS.md](STREAM_INFER_IMPROVEMENTS.md) for details.
+
 ### Project Structure
 
 ```
